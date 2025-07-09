@@ -1,0 +1,1120 @@
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, signOut } from 'firebase/auth';
+import { getFirestore } from 'firebase/firestore'; // Import getFirestore even if not fully used for data persistence yet
+
+// Ensure these global variables are available from the Canvas environment
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+// Gemini API Key (leave empty, Canvas will provide at runtime)
+const apiKey = "";
+
+// --- Firebase Initialization and Authentication Context ---
+const FirebaseContext = React.createContext(null);
+
+function FirebaseProvider({ children }) {
+  const [app, setApp] = useState(null);
+  const [db, setDb] = useState(null);
+  const [auth, setAuth] = useState(null);
+  const [userId, setUserId] = useState(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+
+  useEffect(() => {
+    // Initialize Firebase only once
+    if (!app && Object.keys(firebaseConfig).length > 0) {
+      const firebaseApp = initializeApp(firebaseConfig);
+      setApp(firebaseApp);
+      setDb(getFirestore(firebaseApp));
+      setAuth(getAuth(firebaseApp));
+    }
+  }, [app, firebaseConfig]);
+
+  useEffect(() => {
+    if (auth) {
+      const unsubscribe = onAuthStateChanged(auth, async (user) => {
+        if (user) {
+          setUserId(user.uid);
+          setIsAuthReady(true);
+        } else {
+          // If no user, try to sign in with custom token or anonymously
+          try {
+            if (initialAuthToken) {
+              await signInWithCustomToken(auth, initialAuthToken);
+            } else {
+              await signInAnonymously(auth);
+            }
+          } catch (error) {
+            console.error("Firebase authentication error:", error);
+            // Fallback to a random ID if anonymous sign-in also fails
+            setUserId(crypto.randomUUID());
+            setIsAuthReady(true);
+          }
+        }
+      });
+      return () => unsubscribe();
+    }
+  }, [auth, initialAuthToken]);
+
+  return (
+    <FirebaseContext.Provider value={{ app, db, auth, userId, isAuthReady }}>
+      {children}
+    </FirebaseContext.Provider>
+  );
+}
+
+// --- Components ---
+
+// Header Component
+const Header = ({ currentPage, setCurrentPage, userId, onLogout }) => (
+  <header className="bg-gradient-to-r from-emerald-600 to-green-800 text-white p-4 shadow-lg rounded-b-lg">
+    <div className="container mx-auto flex justify-between items-center">
+      <h1 className="text-3xl font-bold font-inter">FinNest <span className="text-emerald-200 text-xl">by Banyan Tree AMC</span></h1>
+      <nav className="hidden md:flex space-x-6">
+        <NavItem title="Dashboard" page="dashboard" currentPage={currentPage} setCurrentPage={setCurrentPage} />
+        <NavItem title="Fund Discovery" page="fundDiscovery" currentPage={currentPage} setCurrentPage={setCurrentPage} />
+        <NavItem title="Investment" page="investment" currentPage={currentPage} setCurrentPage={setCurrentPage} />
+        <NavItem title="Portfolio" page="portfolio" currentPage={currentPage} setCurrentPage={setCurrentPage} />
+        <NavItem title="Research" page="research" currentPage={currentPage} setCurrentPage={setCurrentPage} />
+        <NavItem title="Support" page="support" currentPage={currentPage} setCurrentPage={setCurrentPage} />
+      </nav>
+      <div className="flex items-center space-x-4">
+        {userId && (
+          <span className="text-sm font-medium hidden md:block">User ID: {userId.substring(0, 8)}...</span>
+        )}
+        <button
+          onClick={onLogout}
+          className="bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-full shadow-md transition duration-300 ease-in-out"
+        >
+          Logout
+        </button>
+      </div>
+    </div>
+    {/* Mobile Navigation */}
+    <div className="md:hidden mt-4">
+      <select
+        className="block w-full bg-emerald-700 text-white p-2 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-300"
+        value={currentPage}
+        onChange={(e) => setCurrentPage(e.target.value)}
+      >
+        <option value="dashboard">Dashboard</option>
+        <option value="fundDiscovery">Fund Discovery</option>
+        <option value="investment">Investment</option>
+        <option value="portfolio">Portfolio</option>
+        <option value="research">Research</option>
+        <option value="support">Support</option>
+      </select>
+    </div>
+  </header>
+);
+
+const NavItem = ({ title, page, currentPage, setCurrentPage }) => (
+  <button
+    onClick={() => setCurrentPage(page)}
+    className={`relative text-lg font-medium transition duration-300 ease-in-out
+      ${currentPage === page ? 'text-emerald-200' : 'text-white hover:text-emerald-100'}
+      after:absolute after:bottom-0 after:left-0 after:w-full after:h-0.5 after:bg-emerald-200 after:scale-x-0 after:origin-left after:transition-transform after:duration-300 hover:after:scale-x-100`}
+  >
+    {title}
+  </button>
+);
+
+// Footer Component
+const Footer = () => (
+  <footer className="bg-gray-800 text-white p-4 mt-8 rounded-t-lg shadow-inner">
+    <div className="container mx-auto text-center text-sm">
+      <p>&copy; {new Date().getFullYear()} Banyan Tree AMC. All rights reserved. Investments are subject to market risks.</p>
+      <p className="mt-2">Disclaimer: This is a demo application. Real financial data and transactions are not processed.</p>
+    </div>
+  </footer>
+);
+
+// Card Component for consistent styling
+const Card = ({ title, children }) => (
+  <div className="bg-white p-6 rounded-xl shadow-lg hover:shadow-xl transition-shadow duration-300">
+    {title && <h3 className="text-xl font-semibold text-gray-800 mb-4 border-b pb-2">{title}</h3>}
+    {children}
+  </div>
+);
+
+// --- Pages ---
+
+const OnboardingPage = ({ onLoginSuccess, onKYCComplete, onRiskProfileComplete }) => {
+  const [step, setStep] = useState(0); // 0: Login/Signup, 1: KYC, 2: Risk Profiling
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [riskProfile, setRiskProfile] = useState('');
+  const [message, setMessage] = useState('');
+
+  const handleLoginSignup = (e) => {
+    e.preventDefault();
+    setMessage('Logging in/Signing up...');
+    setTimeout(() => {
+      setMessage('Login/Signup successful!');
+      setStep(1); // Move to KYC
+      onLoginSuccess(); // Notify App component of login success
+    }, 1500);
+  };
+
+  const handleKYCComplete = () => {
+    setMessage('eKYC in progress...');
+    setTimeout(() => {
+      setMessage('PAN, Aadhaar-based eKYC completed!');
+      setStep(2); // Move to Risk Profiling
+      onKYCComplete(); // Notify App component of KYC completion
+    }, 2000);
+  };
+
+  const handleRiskProfileSubmit = () => {
+    if (riskProfile) {
+      setMessage(`Risk profile set to: ${riskProfile}`);
+      setTimeout(() => {
+        onRiskProfileComplete(riskProfile); // Notify App component
+      }, 1500);
+    } else {
+      setMessage('Please select a risk profile.');
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+      <Card title="Welcome to FinNest" className="w-full max-w-md">
+        {step === 0 && (
+          <form onSubmit={handleLoginSignup} className="space-y-4">
+            <p className="text-gray-600">Sign up or log in to get started!</p>
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Email/Mobile</label>
+              <input
+                type="text"
+                className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-emerald-500 focus:border-emerald-500"
+                placeholder="Enter email or mobile"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Password</label>
+              <input
+                type="password"
+                className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-emerald-500 focus:border-emerald-500"
+                placeholder="Enter password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+            </div>
+            <button
+              type="submit"
+              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-4 rounded-md shadow-md transition duration-300"
+            >
+              Login / Sign Up
+            </button>
+            {message && <p className="text-center text-sm text-gray-600 mt-2">{message}</p>}
+          </form>
+        )}
+
+        {step === 1 && (
+          <div className="space-y-4">
+            <h4 className="text-lg font-semibold text-gray-700">Step 2: Complete eKYC</h4>
+            <p className="text-gray-600">PAN, Aadhaar-based eKYC for quick verification.</p>
+            <button
+              onClick={handleKYCComplete}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md shadow-md transition duration-300"
+            >
+              Start eKYC (Simulated)
+            </button>
+            {message && <p className="text-center text-sm text-gray-600 mt-2">{message}</p>}
+          </div>
+        )}
+
+        {step === 2 && (
+          <div className="space-y-4">
+            <h4 className="text-lg font-semibold text-gray-700">Step 3: Risk Profiling</h4>
+            <p className="text-gray-600">Help us understand your investment style.</p>
+            <div className="flex flex-col space-y-2">
+              <label className="inline-flex items-center">
+                <input
+                  type="radio"
+                  className="form-radio text-emerald-600"
+                  name="riskProfile"
+                  value="Conservative"
+                  checked={riskProfile === 'Conservative'}
+                  onChange={(e) => setRiskProfile(e.target.value)}
+                />
+                <span className="ml-2 text-gray-700">Conservative</span>
+              </label>
+              <label className="inline-flex items-center">
+                <input
+                  type="radio"
+                  className="form-radio text-emerald-600"
+                  name="riskProfile"
+                  value="Balanced"
+                  checked={riskProfile === 'Balanced'}
+                  onChange={(e) => setRiskProfile(e.target.value)}
+                />
+                <span className="ml-2 text-gray-700">Balanced</span>
+              </label>
+              <label className="inline-flex items-center">
+                <input
+                  type="radio"
+                  className="form-radio text-emerald-600"
+                  name="riskProfile"
+                  value="Aggressive"
+                  checked={riskProfile === 'Aggressive'}
+                  onChange={(e) => setRiskProfile(e.target.value)}
+                />
+                <span className="ml-2 text-gray-700">Aggressive</span>
+              </label>
+            </div>
+            <button
+              onClick={handleRiskProfileSubmit}
+              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-4 rounded-md shadow-md transition duration-300"
+            >
+              Submit Risk Profile
+            </button>
+            {message && <p className="text-center text-sm text-gray-600 mt-2">{message}</p>}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+};
+
+const DashboardPage = ({ userName, riskProfile }) => {
+  const dummyInvestments = [
+    { name: 'BT Flexi Cap Fund - Direct Growth', value: '₹55,230', gain: '+₹5,230 (10.46%)' },
+    { name: 'BT Debt Income Fund', value: '₹22,100', gain: '+₹1,100 (5.24%)' },
+  ];
+
+  const dummySIPs = [
+    { fund: 'BT Flexi Cap Fund', amount: '₹5,000', dueDate: '10 July 2025' },
+    { fund: 'BT Large Cap Fund', amount: '₹3,000', dueDate: '15 July 2025' },
+  ];
+
+  return (
+    <div className="container mx-auto p-4 space-y-6">
+      <h2 className="text-3xl font-bold text-gray-800 mb-6">Hello, {userName || 'Investor'}!</h2>
+      {riskProfile && (
+        <Card title="Your Risk Profile">
+          <p className="text-gray-700">You are identified as a <span className="font-semibold text-emerald-600">{riskProfile}</span> investor.</p>
+        </Card>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <Card title="Total Investments">
+          <p className="text-4xl font-bold text-emerald-600">₹77,330</p>
+          <p className="text-sm text-gray-500 mt-1">As of today</p>
+        </Card>
+
+        <Card title="Fund Performance (Overall)">
+          <div className="h-32 bg-gray-100 rounded-lg flex items-center justify-center text-gray-500">
+            {/* Placeholder for a chart */}
+            <p>Performance Chart Placeholder</p>
+          </div>
+          <p className="text-sm text-gray-600 mt-2">Your portfolio has grown consistently.</p>
+        </Card>
+
+        <Card title="Upcoming SIPs">
+          <ul className="space-y-2">
+            {dummySIPs.map((sip, index) => (
+              <li key={index} className="flex justify-between items-center text-gray-700 border-b pb-2 last:border-b-0">
+                <span>{sip.fund}</span>
+                <span className="font-semibold">{sip.amount} (Due: {sip.dueDate})</span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+
+        <Card title="Market News">
+          <ul className="space-y-2 text-gray-700">
+            <li><span className="font-semibold">Nifty 50 rises 0.8% today.</span></li>
+            <li>Sensex gains 300 points on positive global cues.</li>
+            <li>RBI holds interest rates steady.</li>
+          </ul>
+        </Card>
+
+        <Card title="NAV Alerts">
+          <ul className="space-y-2 text-gray-700">
+            <li>BT Flexi Cap Fund NAV: ₹156.78 <span className="text-green-600">(+0.5%)</span></li>
+            <li>BT Large Cap Fund NAV: ₹210.20 <span className="text-red-600">(-0.2%)</span></li>
+          </ul>
+        </Card>
+      </div>
+    </div>
+  );
+};
+
+const FundDiscoveryPage = () => {
+  const dummyFunds = [
+    { name: 'BT Flexi Cap Fund - Direct Growth', category: 'Equity', amc: 'Banyan Tree AMC', returns3Y: '17.25%', rating: '5-Star', nav: '₹156.78' },
+    { name: 'Canara Robeco Emerging Equities Fund', category: 'Equity', amc: 'Canara Robeco AMC', returns3Y: '18.5%', rating: '4-Star', nav: '₹180.10' },
+    { name: 'BT Debt Income Fund', category: 'Debt', amc: 'Banyan Tree AMC', returns3Y: '6.80%', rating: '4-Star', nav: '₹25.50' },
+    { name: 'HDFC Balanced Advantage Fund', category: 'Hybrid', amc: 'HDFC AMC', returns3Y: '15.10%', rating: '5-Star', nav: '₹350.20' },
+    { name: 'BT ELSS Tax Saver Fund', category: 'ELSS', amc: 'Banyan Tree AMC', returns3Y: '16.90%', rating: '4-Star', nav: '₹98.70' },
+  ];
+
+  const [filterCategory, setFilterCategory] = useState('All');
+  const [filterAMC, setFilterAMC] = useState('All');
+  const [filterRating, setFilterRating] = useState('All');
+  const [explanationLoading, setExplanationLoading] = useState(false);
+  const [fundExplanation, setFundExplanation] = useState('');
+  const [showExplanationModal, setShowExplanationModal] = useState(false);
+  const [selectedFundForExplanation, setSelectedFundForExplanation] = useState(null);
+
+
+  const filteredFunds = dummyFunds.filter(fund => {
+    const categoryMatch = filterCategory === 'All' || fund.category === filterCategory;
+    const amcMatch = filterAMC === 'All' || fund.amc === filterAMC;
+    const ratingMatch = filterRating === 'All' || fund.rating === filterRating;
+    return categoryMatch && amcMatch && ratingMatch;
+  });
+
+  const uniqueCategories = ['All', ...new Set(dummyFunds.map(f => f.category))];
+  const uniqueAMCs = ['All', ...new Set(dummyFunds.map(f => f.amc))];
+  const uniqueRatings = ['All', ...new Set(dummyFunds.map(f => f.rating))];
+
+  const getFundExplanation = async (fund) => {
+    setExplanationLoading(true);
+    setFundExplanation('');
+    setSelectedFundForExplanation(fund);
+    setShowExplanationModal(true);
+
+    try {
+      const prompt = `Explain the mutual fund "${fund.name}" (${fund.category} category) in simple terms, highlighting its main objective and what kind of investor it might be suitable for. Keep the explanation concise, around 50-70 words.`;
+      let chatHistory = [];
+      chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+      const payload = { contents: chatHistory };
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const result = await response.json();
+      if (result.candidates && result.candidates.length > 0 &&
+          result.candidates[0].content && result.candidates[0].content.parts &&
+          result.candidates[0].content.parts.length > 0) {
+        const text = result.candidates[0].content.parts[0].text;
+        setFundExplanation(text);
+      } else {
+        setFundExplanation("Could not generate explanation. Please try again.");
+      }
+    } catch (error) {
+      console.error("Error calling Gemini API for fund explanation:", error);
+      setFundExplanation("Failed to get explanation. Please check your network connection or try again later.");
+    } finally {
+      setExplanationLoading(false);
+    }
+  };
+
+  const closeModal = () => {
+    setShowExplanationModal(false);
+    setFundExplanation('');
+    setSelectedFundForExplanation(null);
+  };
+
+  return (
+    <div className="container mx-auto p-4 space-y-6">
+      <h2 className="text-3xl font-bold text-gray-800 mb-6">Discover Funds</h2>
+
+      <Card title="Top Picks Today">
+        <p className="text-lg font-semibold text-emerald-700">Canara Robeco Emerging Equities Fund – 3Y CAGR: 18.5%</p>
+        <p className="text-gray-600 mt-1">A strong performer in the equity segment. Consider for long-term growth.</p>
+        <button className="mt-3 bg-emerald-500 hover:bg-emerald-600 text-white py-2 px-4 rounded-md text-sm shadow-md">View Details</button>
+      </Card>
+
+      <Card title="Browse & Filter Funds">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <div>
+            <label htmlFor="categoryFilter" className="block text-sm font-medium text-gray-700">Category</label>
+            <select
+              id="categoryFilter"
+              className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-emerald-500 focus:border-emerald-500"
+              value={filterCategory}
+              onChange={(e) => setFilterCategory(e.target.value)}
+            >
+              {uniqueCategories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+            </select>
+          </div>
+          <div>
+            <label htmlFor="amcFilter" className="block text-sm font-medium text-gray-700">AMC</label>
+            <select
+              id="amcFilter"
+              className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-emerald-500 focus:border-emerald-500"
+              value={filterAMC}
+              onChange={(e) => setFilterAMC(e.target.value)}
+            >
+              {uniqueAMCs.map(amc => <option key={amc} value={amc}>{amc}</option>)}
+            </select>
+          </div>
+          <div>
+            <label htmlFor="ratingFilter" className="block text-sm font-medium text-gray-700">Rating</label>
+            <select
+              id="ratingFilter"
+              className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-emerald-500 focus:border-emerald-500"
+              value={filterRating}
+              onChange={(e) => setFilterRating(e.target.value)}
+            >
+              {uniqueRatings.map(rating => <option key={rating} value={rating}>{rating}</option>)}
+            </select>
+          </div>
+        </div>
+
+        {filteredFunds.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200 rounded-lg overflow-hidden">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Fund Name</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Category</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">AMC</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">3Y CAGR</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Rating</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">NAV</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {filteredFunds.map((fund, index) => (
+                  <tr key={index} className="hover:bg-gray-50">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{fund.name}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{fund.category}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{fund.amc}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{fund.returns3Y}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{fund.rating}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">₹{fund.nav}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium flex space-x-2">
+                      <button className="text-emerald-600 hover:text-emerald-900">Invest</button>
+                      <button
+                        onClick={() => getFundExplanation(fund)}
+                        className="bg-blue-500 hover:bg-blue-600 text-white py-1 px-3 rounded-md text-xs shadow-sm flex items-center"
+                        disabled={explanationLoading}
+                      >
+                        {explanationLoading && selectedFundForExplanation?.name === fund.name ? (
+                          <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                        ) : 'Explain this Fund ✨'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-center text-gray-600 py-8">No funds match your criteria.</p>
+        )}
+      </Card>
+
+      {/* Fund Explanation Modal */}
+      {showExplanationModal && (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-lg w-full">
+            <div className="flex justify-between items-center border-b pb-3 mb-4">
+              <h3 className="text-xl font-semibold text-gray-800">Explanation for {selectedFundForExplanation?.name}</h3>
+              <button onClick={closeModal} className="text-gray-500 hover:text-gray-700 text-2xl font-bold">&times;</button>
+            </div>
+            {explanationLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <svg className="animate-spin h-8 w-8 text-emerald-600 mr-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <p className="text-gray-700">Generating explanation...</p>
+              </div>
+            ) : (
+              <p className="text-gray-700">{fundExplanation}</p>
+            )}
+            <div className="mt-6 text-right">
+              <button
+                onClick={closeModal}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-4 rounded-md shadow-md transition duration-300"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const InvestmentPage = () => {
+  const [investmentType, setInvestmentType] = useState('SIP');
+  const [fundName, setFundName] = useState('BT Flexi Cap Fund - Direct Growth');
+  const [amount, setAmount] = useState('5000');
+  const [message, setMessage] = useState('');
+
+  const handleInvest = (e) => {
+    e.preventDefault();
+    setMessage('Processing your investment...');
+    setTimeout(() => {
+      setMessage(`Successfully initiated ${investmentType} of ₹${amount} in ${fundName}!`);
+      // In a real app, this would trigger backend API calls
+    }, 2000);
+  };
+
+  const dummyFunds = [
+    'BT Flexi Cap Fund - Direct Growth',
+    'BT Debt Income Fund',
+    'BT ELSS Tax Saver Fund',
+    'Other Fund A',
+    'Other Fund B',
+  ];
+
+  return (
+    <div className="container mx-auto p-4 space-y-6">
+      <h2 className="text-3xl font-bold text-gray-800 mb-6">Invest Now</h2>
+
+      <Card title="Choose Investment Type">
+        <div className="flex space-x-4 mb-4">
+          <button
+            className={`py-2 px-6 rounded-full font-semibold transition duration-300 ${
+              investmentType === 'SIP' ? 'bg-emerald-600 text-white shadow-md' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
+            onClick={() => setInvestmentType('SIP')}
+          >
+            SIP (Systematic Investment Plan)
+          </button>
+          <button
+            className={`py-2 px-6 rounded-full font-semibold transition duration-300 ${
+              investmentType === 'Lump Sum' ? 'bg-emerald-600 text-white shadow-md' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
+            onClick={() => setInvestmentType('Lump Sum')}
+          >
+            Lump Sum
+          </button>
+        </div>
+
+        <form onSubmit={handleInvest} className="space-y-4">
+          <div>
+            <label htmlFor="fundSelect" className="block text-sm font-medium text-gray-700">Select Fund</label>
+            <select
+              id="fundSelect"
+              className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-emerald-500 focus:border-emerald-500"
+              value={fundName}
+              onChange={(e) => setFundName(e.target.value)}
+              required
+            >
+              {dummyFunds.map(fund => <option key={fund} value={fund}>{fund}</option>)}
+            </select>
+          </div>
+          <div>
+            <label htmlFor="amountInput" className="block text-sm font-medium text-gray-700">Investment Amount (₹)</label>
+            <input
+              type="number"
+              id="amountInput"
+              className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-emerald-500 focus:border-emerald-500"
+              placeholder="e.g., 5000"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              min="100"
+              required
+            />
+          </div>
+          {investmentType === 'SIP' && (
+            <div>
+              <label htmlFor="sipDate" className="block text-sm font-medium text-gray-700">SIP Start Date</label>
+              <input
+                type="date"
+                id="sipDate"
+                className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-emerald-500 focus:border-emerald-500"
+                defaultValue="2025-07-10" // Dummy start date
+                required
+              />
+            </div>
+          )}
+          <button
+            type="submit"
+            className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 px-4 rounded-md shadow-lg transition duration-300"
+          >
+            Invest Now
+          </button>
+          {message && <p className="text-center text-sm text-gray-600 mt-2">{message}</p>}
+        </form>
+      </Card>
+
+      <Card title="Goal-based Investing Journeys">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="bg-blue-50 p-4 rounded-lg shadow-sm border border-blue-200">
+            <h4 className="font-semibold text-blue-800">Save for a House</h4>
+            <p className="text-sm text-gray-600 mt-1">Plan your down payment with tailored fund recommendations.</p>
+            <button className="mt-3 text-blue-600 hover:text-blue-800 font-semibold text-sm">Start Journey &rarr;</button>
+          </div>
+          <div className="bg-purple-50 p-4 rounded-lg shadow-sm border border-purple-200">
+            <h4 className="font-semibold text-purple-800">Child's Education</h4>
+            <p className="text-sm text-gray-600 mt-1">Secure your child's future with long-term growth funds.</p>
+            <button className="mt-3 text-purple-600 hover:text-purple-800 font-semibold text-sm">Start Journey &rarr;</button>
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+};
+
+const PortfolioPage = () => {
+  const dummyPortfolio = [
+    { fund: 'BT Flexi Cap Fund - Direct Growth', units: 352.34, nav: 156.78, value: 55230, invested: 50000, gain: 5230, gainPercent: 10.46 },
+    { fund: 'BT Debt Income Fund', units: 866.67, nav: 25.50, value: 22100, invested: 21000, gain: 1100, gainPercent: 5.24 },
+    { fund: 'BT ELSS Tax Saver Fund', units: 101.31, nav: 98.70, value: 10000, invested: 10000, gain: 0, gainPercent: 0 }, // New investment
+  ];
+
+  const totalInvested = dummyPortfolio.reduce((sum, item) => sum + item.invested, 0);
+  const totalCurrentValue = dummyPortfolio.reduce((sum, item) => sum + item.value, 0);
+  const totalGain = totalCurrentValue - totalInvested;
+  const totalGainPercent = totalInvested > 0 ? (totalGain / totalInvested * 100).toFixed(2) : 0;
+
+  // Dummy XIRR calculation (simplified, not actual XIRR logic)
+  const dummyXIRR = '12.8%';
+
+  return (
+    <div className="container mx-auto p-4 space-y-6">
+      <h2 className="text-3xl font-bold text-gray-800 mb-6">My Portfolio</h2>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <Card title="Total Current Value">
+          <p className="text-4xl font-bold text-emerald-600">₹{totalCurrentValue.toLocaleString('en-IN')}</p>
+        </Card>
+        <Card title="Total Gain/Loss">
+          <p className={`text-4xl font-bold ${totalGain >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+            ₹{totalGain.toLocaleString('en-IN')}
+          </p>
+          <p className={`text-lg ${totalGain >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+            ({totalGainPercent}%)
+          </p>
+        </Card>
+        <Card title="XIRR (Extended Internal Rate of Return)">
+          <p className="text-4xl font-bold text-blue-600">{dummyXIRR}</p>
+          <p className="text-sm text-gray-500 mt-1">Your annualized return</p>
+        </Card>
+      </div>
+
+      <Card title="My Holdings">
+        {dummyPortfolio.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200 rounded-lg overflow-hidden">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Fund Name</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Units</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Current NAV</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Current Value</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Invested Amount</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Gain/Loss (Abs)</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Gain/Loss (%)</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {dummyPortfolio.map((holding, index) => (
+                  <tr key={index} className="hover:bg-gray-50">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{holding.fund}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{holding.units.toFixed(2)}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">₹{holding.nav.toFixed(2)}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">₹{holding.value.toLocaleString('en-IN')}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">₹{holding.invested.toLocaleString('en-IN')}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                      <span className={`${holding.gain >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        ₹{holding.gain.toLocaleString('en-IN')}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                      <span className={`${holding.gainPercent >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        {holding.gainPercent.toFixed(2)}%
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-center text-gray-600 py-8">No investments found. Start investing today!</p>
+        )}
+      </Card>
+
+      <Card title="Tax Reports">
+        <ul className="space-y-2 text-gray-700">
+          <li className="flex justify-between items-center">
+            <span>Capital Gain Statement FY 2024-25</span>
+            <button className="text-blue-600 hover:text-blue-800 font-semibold text-sm">Download</button>
+          </li>
+          <li className="flex justify-between items-center">
+            <span>Consolidated Account Statement (CAS)</span>
+            <button className="text-blue-600 hover:text-blue-800 font-semibold text-sm">Download</button>
+          </li>
+        </ul>
+      </Card>
+    </div>
+  );
+};
+
+const ResearchPage = () => {
+  const [searchTerm, setSearchTerm] = useState('');
+  const [termExplanation, setTermExplanation] = useState('');
+  const [explanationLoading, setExplanationLoading] = useState(false);
+
+  const handleExplainTerm = async () => {
+    if (!searchTerm.trim()) {
+      setTermExplanation('Please enter a term to explain.');
+      return;
+    }
+
+    setExplanationLoading(true);
+    setTermExplanation('');
+
+    try {
+      const prompt = `Explain the financial term "${searchTerm}" in simple, easy-to-understand language. Keep the explanation concise, around 50-70 words.`;
+      let chatHistory = [];
+      chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+      const payload = { contents: chatHistory };
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const result = await response.json();
+      if (result.candidates && result.candidates.length > 0 &&
+          result.candidates[0].content && result.candidates[0].content.parts &&
+          result.candidates[0].content.parts.length > 0) {
+        const text = result.candidates[0].content.parts[0].text;
+        setTermExplanation(text);
+      } else {
+        setTermExplanation("Could not generate explanation. Please try again.");
+      }
+    } catch (error) {
+      console.error("Error calling Gemini API for term explanation:", error);
+      setTermExplanation("Failed to get explanation. Please check your network connection or try again later.");
+    } finally {
+      setExplanationLoading(false);
+    }
+  };
+
+  return (
+    <div className="container mx-auto p-4 space-y-6">
+      <h2 className="text-3xl font-bold text-gray-800 mb-6">Research & Education</h2>
+
+      <Card title="Beginner's Guide to Mutual Funds">
+        <p className="text-gray-700 mb-3">
+          New to mutual funds? Our comprehensive guide covers the basics, types of funds, benefits, and how to get started.
+        </p>
+        <button className="bg-emerald-500 hover:bg-emerald-600 text-white py-2 px-4 rounded-md shadow-md">Read Guide</button>
+      </Card>
+
+      <Card title="Explain Market Term ✨">
+        <div className="flex flex-col sm:flex-row space-y-3 sm:space-y-0 sm:space-x-3 mb-4">
+          <input
+            type="text"
+            className="flex-grow p-2 border border-gray-300 rounded-md shadow-sm focus:ring-emerald-500 focus:border-emerald-500"
+            placeholder="e.g., CAGR, NAV, Expense Ratio"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+          <button
+            onClick={handleExplainTerm}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white py-2 px-4 rounded-md shadow-md flex items-center justify-center"
+            disabled={explanationLoading}
+          >
+            {explanationLoading ? (
+              <svg className="animate-spin -ml-1 mr-2 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+            ) : 'Explain Term ✨'}
+          </button>
+        </div>
+        {termExplanation && (
+          <div className="bg-gray-50 p-4 rounded-md border border-gray-200">
+            <p className="text-gray-700">{termExplanation}</p>
+          </div>
+        )}
+      </Card>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <Card title="Educational Videos & Infographics">
+          <ul className="space-y-3 text-gray-700">
+            <li>
+              <a href="#" className="text-blue-600 hover:underline">Understanding NAV & Expense Ratio (Video)</a>
+            </li>
+            <li>
+              <a href="#" className="text-blue-600 hover:underline">Power of Compounding (Infographic)</a>
+            </li>
+            <li>
+              <a href="#" className="text-blue-600 hover:underline">SIP vs. Lump Sum Explained (Video)</a>
+            </li>
+          </ul>
+        </Card>
+
+        <Card title="Calculators">
+          <ul className="space-y-3 text-gray-700">
+            <li>
+              <a href="#" className="text-blue-600 hover:underline">SIP Calculator</a>
+              <p className="text-sm text-gray-500">Estimate your future wealth with SIPs.</p>
+            </li>
+            <li>
+              <a href="#" className="text-blue-600 hover:underline">Goal Planner</a>
+              <p className="text-sm text-gray-500">Plan investments for specific financial goals.</p>
+            </li>
+          </ul>
+        </Card>
+      </div>
+
+      <Card title="Market Commentary">
+        <p className="text-lg font-semibold text-gray-800 mb-2">India GDP growth beats forecast at 7.8%</p>
+        <p className="text-gray-700 text-sm">
+          The latest economic data shows robust growth, signaling strong fundamentals for the Indian market.
+          This positive outlook may benefit equity-oriented mutual funds.
+        </p>
+        <p className="text-right text-gray-500 text-xs mt-2">- Banyan Tree AMC Research Team</p>
+      </Card>
+    </div>
+  );
+};
+
+const SupportPage = () => {
+  const [chatInput, setChatInput] = useState('');
+  const [chatHistory, setChatHistory] = useState([
+    { sender: 'bot', message: 'Hello! How can I assist you today regarding your investments?' }
+  ]);
+  const [ticketSubject, setTicketSubject] = useState('');
+  const [ticketDescription, setTicketDescription] = useState('');
+  const [ticketMessage, setTicketMessage] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+
+  const handleChatSubmit = async (e) => {
+    e.preventDefault();
+    if (chatInput.trim()) {
+      const newUserMessage = { sender: 'user', message: chatInput };
+      setChatHistory(prev => [...prev, newUserMessage]);
+      setChatInput('');
+      setChatLoading(true);
+
+      try {
+        const prompt = `As a helpful financial assistant for FinNest by Banyan Tree AMC, respond to the following user query about investments or the app. Be concise and informative. User query: "${newUserMessage.message}"`;
+        let chatHistoryForAPI = [];
+        chatHistoryForAPI.push({ role: "user", parts: [{ text: prompt }] });
+        const payload = { contents: chatHistoryForAPI };
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const result = await response.json();
+        if (result.candidates && result.candidates.length > 0 &&
+            result.candidates[0].content && result.candidates[0].content.parts &&
+            result.candidates[0].content.parts.length > 0) {
+          const text = result.candidates[0].content.parts[0].text;
+          setChatHistory(prev => [...prev, { sender: 'bot', message: text }]);
+        } else {
+          setChatHistory(prev => [...prev, { sender: 'bot', message: "I'm sorry, I couldn't process that. Please try again." }]);
+        }
+      } catch (error) {
+        console.error("Error calling Gemini API for chatbot:", error);
+        setChatHistory(prev => [...prev, { sender: 'bot', message: "I'm having trouble connecting. Please try again later." }]);
+      } finally {
+        setChatLoading(false);
+      }
+    }
+  };
+
+  const handleTicketSubmit = (e) => {
+    e.preventDefault();
+    if (ticketSubject.trim() && ticketDescription.trim()) {
+      setTicketMessage('Submitting your ticket...');
+      setTimeout(() => {
+        setTicketMessage('Your support ticket has been raised successfully! We will get back to you within 24-48 hours.');
+        setTicketSubject('');
+        setTicketDescription('');
+      }, 2000);
+    } else {
+      setTicketMessage('Please fill in both subject and description for your ticket.');
+    }
+  };
+
+  return (
+    <div className="container mx-auto p-4 space-y-6">
+      <h2 className="text-3xl font-bold text-gray-800 mb-6">Support & Help</h2>
+
+      <Card title="24x7 Support Bot ✨">
+        <div className="h-80 bg-gray-50 border border-gray-200 rounded-lg p-4 flex flex-col overflow-y-auto mb-4">
+          {chatHistory.map((chat, index) => (
+            <div key={index} className={`flex ${chat.sender === 'user' ? 'justify-end' : 'justify-start'} mb-2`}>
+              <div className={`p-3 rounded-lg max-w-[70%] ${
+                chat.sender === 'user' ? 'bg-emerald-500 text-white' : 'bg-gray-200 text-gray-800'
+              }`}>
+                {chat.message}
+              </div>
+            </div>
+          ))}
+          {chatLoading && (
+            <div className="flex justify-start mb-2">
+              <div className="p-3 rounded-lg bg-gray-200 text-gray-800">
+                <svg className="animate-pulse h-4 w-12" viewBox="0 0 100 20" xmlns="http://www.w3.org/2000/svg">
+                  <circle cx="10" cy="10" r="8" fill="currentColor" opacity="0.6"/>
+                  <circle cx="40" cy="10" r="8" fill="currentColor" opacity="0.4"/>
+                  <circle cx="70" cy="10" r="8" fill="currentColor" opacity="0.2"/>
+                </svg>
+              </div>
+            </div>
+          )}
+        </div>
+        <form onSubmit={handleChatSubmit} className="flex space-x-2">
+          <input
+            type="text"
+            className="flex-grow p-2 border border-gray-300 rounded-md shadow-sm focus:ring-emerald-500 focus:border-emerald-500"
+            placeholder="Type your message..."
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            disabled={chatLoading}
+          />
+          <button
+            type="submit"
+            className="bg-emerald-600 hover:bg-emerald-700 text-white py-2 px-4 rounded-md shadow-md"
+            disabled={chatLoading}
+          >
+            Send
+          </button>
+        </form>
+      </Card>
+
+      <Card title="Raise a Support Ticket">
+        <form onSubmit={handleTicketSubmit} className="space-y-4">
+          <div>
+            <label htmlFor="ticketSubject" className="block text-sm font-medium text-gray-700">Subject</label>
+            <input
+              type="text"
+              id="ticketSubject"
+              className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-emerald-500 focus:border-emerald-500"
+              placeholder="e.g., Issue with SIP payment"
+              value={ticketSubject}
+              onChange={(e) => setTicketSubject(e.target.value)}
+              required
+            />
+          </div>
+          <div>
+            <label htmlFor="ticketDescription" className="block text-sm font-medium text-gray-700">Description</label>
+            <textarea
+              id="ticketDescription"
+              rows="4"
+              className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-emerald-500 focus:border-emerald-500"
+              placeholder="Please describe your issue in detail..."
+              value={ticketDescription}
+              onChange={(e) => setTicketDescription(e.target.value)}
+              required
+            ></textarea>
+          </div>
+          <button
+            type="submit"
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md shadow-md transition duration-300"
+          >
+            Submit Ticket
+          </button>
+          {ticketMessage && <p className="text-center text-sm text-gray-600 mt-2">{ticketMessage}</p>}
+        </form>
+      </Card>
+    </div>
+  );
+};
+
+// --- Main App Component ---
+function App() {
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isKYCComplete, setIsKYCComplete] = useState(false);
+  const [riskProfile, setRiskProfile] = useState('');
+  const [currentPage, setCurrentPage] = useState('dashboard'); // Default page after onboarding
+
+  const { auth, userId, isAuthReady } = React.useContext(FirebaseContext);
+
+  // Simulate user data (Priya Sharma)
+  const userName = "Priya Sharma";
+  // const userPAN = "ABCTP1234D"; // Not displayed, but for context
+
+  const handleLoginSuccess = () => {
+    setIsLoggedIn(true);
+  };
+
+  const handleKYCComplete = () => {
+    setIsKYCComplete(true);
+  };
+
+  const handleRiskProfileComplete = (profile) => {
+    setRiskProfile(profile);
+    setCurrentPage('dashboard'); // Navigate to dashboard after onboarding
+  };
+
+  const handleLogout = async () => {
+    if (auth) {
+      try {
+        await signOut(auth);
+        console.log("User signed out.");
+      } catch (error) {
+        console.error("Error signing out:", error);
+      }
+    }
+    setIsLoggedIn(false);
+    setIsKYCComplete(false);
+    setRiskProfile('');
+    setCurrentPage('onboarding'); // Go back to onboarding
+  };
+
+  // If Firebase auth is not ready, show a loading state
+  if (!isAuthReady) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-100">
+        <div className="text-center text-gray-700 text-lg">Loading FinNest...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col bg-gray-100 font-inter">
+      <style>
+        {`
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        `}
+      </style>
+      <script src="https://cdn.tailwindcss.com"></script>
+
+      {!isLoggedIn || !isKYCComplete || !riskProfile ? (
+        <OnboardingPage
+          onLoginSuccess={handleLoginSuccess}
+          onKYCComplete={handleKYCComplete}
+          onRiskProfileComplete={handleRiskProfileComplete}
+        />
+      ) : (
+        <>
+          <Header currentPage={currentPage} setCurrentPage={setCurrentPage} userId={userId} onLogout={handleLogout} />
+          <main className="flex-grow py-8">
+            {/* Simple routing based on currentPage state */}
+            {currentPage === 'dashboard' && <DashboardPage userName={userName} riskProfile={riskProfile} />}
+            {currentPage === 'fundDiscovery' && <FundDiscoveryPage />}
+            {currentPage === 'investment' && <InvestmentPage />}
+            {currentPage === 'portfolio' && <PortfolioPage />}
+            {currentPage === 'research' && <ResearchPage />}
+            {currentPage === 'support' && <SupportPage />}
+          </main>
+          <Footer />
+        </>
+      )}
+    </div>
+  );
+}
+
+// Wrap the App with FirebaseProvider
+export default function WrappedApp() {
+  return (
+    <FirebaseProvider>
+      <App />
+    </FirebaseProvider>
+  );
+}
